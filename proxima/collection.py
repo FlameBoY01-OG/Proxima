@@ -19,6 +19,8 @@ and is harder to do well on a graph — a deliberate scope choice.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import time
 
 import numpy as np
@@ -30,6 +32,21 @@ from .store import Store
 # When a filter is active we ask the index for this many times k candidates,
 # so post-filtering still has enough survivors to return a full k.
 _FILTER_OVERFETCH = 10
+
+
+def _graph_fingerprint(store: Store, name: str) -> str:
+    """A hash of a collection's (id, vector) contents — NOT its metadata.
+
+    The HNSW graph depends only on the vectors, so this fingerprint decides
+    whether a saved graph is still valid for the current data. Metadata is
+    deliberately excluded: editing a title or studio must NOT invalidate the
+    graph. iter_vectors orders by id, so the hash is order-stable.
+    """
+    h = hashlib.sha256()
+    for vid, vec, _meta in store.iter_vectors(name):
+        h.update(int(vid).to_bytes(8, "little", signed=True))
+        h.update(vec.tobytes())
+    return h.hexdigest()
 
 
 def _matches(metadata: dict, predicate: dict) -> bool:
@@ -49,33 +66,47 @@ def _matches(metadata: dict, predicate: dict) -> bool:
 
 
 class Collection:
-    def __init__(self, name: str, store: Store, dim: int, metric: str, **hnsw_params):
+    def __init__(self, name: str, store: Store, dim: int, metric: str,
+                 graph_path: str | None = None, **hnsw_params):
         self.name = name
         self.store = store
         self.dim = dim
         self.metric = metric
+        self.graph_path = graph_path       # where to cache the serialized graph (or None)
+        self.loaded_from_graph = False     # observability: did open() skip the rebuild?
         self.index = HNSW(dim, metric, **hnsw_params)
         # In-memory metadata cache so post-filtering doesn't hit SQLite per
         # candidate. Kept in sync on add()/build; rebuilt from the store on load.
         self._metadata: dict = {}
 
+    def __contains__(self, id) -> bool:
+        return id in self._metadata
+
     # ---- lifecycle --------------------------------------------------------
 
     @classmethod
-    def create(cls, name, store: Store, dim, metric="cosine", **hnsw_params) -> "Collection":
+    def create(cls, name, store: Store, dim, metric="cosine",
+               graph_path: str | None = None, **hnsw_params) -> "Collection":
         """Register the collection in SQLite and return a fresh Collection."""
         store.create_collection(name, dim, metric)
-        return cls(name, store, dim, metric, **hnsw_params)
+        return cls(name, store, dim, metric, graph_path=graph_path, **hnsw_params)
 
     @classmethod
-    def open(cls, name, store: Store, **hnsw_params) -> "Collection":
-        """Open an existing collection and rebuild its index from SQLite."""
+    def open(cls, name, store: Store, graph_path: str | None = None, **hnsw_params) -> "Collection":
+        """Open an existing collection: load the saved graph if valid, else rebuild.
+
+        The graph is a cache; SQLite is the source of truth. We load the saved
+        graph only if its fingerprint still matches the store's vectors —
+        otherwise we rebuild and refresh the cache.
+        """
         meta = store.get_collection(name)
         if meta is None:
             raise KeyError(f"collection {name!r} does not exist")
         dim, metric = meta
-        col = cls(name, store, dim, metric, **hnsw_params)
-        col.build_from_store()
+        col = cls(name, store, dim, metric, graph_path=graph_path, **hnsw_params)
+        if not col._try_load_graph():
+            col.build_from_store()
+            col.save_graph()  # cache for next startup (no-op when graph_path is None)
         return col
 
     def build_from_store(self) -> None:
@@ -84,18 +115,58 @@ class Collection:
         self.index = HNSW(self.dim, self.metric,
                           M=self.index.M,
                           ef_construction=self.index.ef_construction,
-                          ef_search=self.index.ef_search)
+                          ef_search=self.index.ef_search,
+                          seed=self.index.seed)   # preserve seed -> deterministic rebuild
         self._metadata = {}
         for i, vid in enumerate(ids):
             self.index.add(vid, matrix[i])
             self._metadata[vid] = metas[i]
+        self.loaded_from_graph = False
+
+    # ---- graph persistence ------------------------------------------------
+
+    def save_graph(self) -> bool:
+        """Serialize the graph + a content fingerprint. No-op if graph_path is None."""
+        if not self.graph_path:
+            return False
+        parent = os.path.dirname(self.graph_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self.index.save(self.graph_path)
+        with open(self.graph_path + ".fp", "w", encoding="utf-8") as f:
+            f.write(_graph_fingerprint(self.store, self.name))
+        return True
+
+    def _try_load_graph(self) -> bool:
+        """Load the saved graph iff it exists and its fingerprint matches the store."""
+        if not self.graph_path:
+            return False
+        fp_path = self.graph_path + ".fp"
+        if not (os.path.exists(self.graph_path) and os.path.exists(fp_path)):
+            return False
+        with open(fp_path, encoding="utf-8") as f:
+            saved_fp = f.read().strip()
+        if saved_fp != _graph_fingerprint(self.store, self.name):
+            return False  # data changed since the graph was saved -> rebuild
+        self.index = HNSW.load(self.graph_path)
+        # The graph doesn't carry metadata; rebuild that cache from the store.
+        self._metadata = {vid: meta for vid, _vec, meta in self.store.iter_vectors(self.name)}
+        self.loaded_from_graph = True
+        return True
 
     # ---- writes -----------------------------------------------------------
 
     def add(self, id: int, vector: np.ndarray, metadata: dict | None = None) -> None:
-        """Persist a vector to SQLite and insert it into the live index."""
+        """Upsert a vector into SQLite and the live index, consistently.
+
+        If the id already exists we replace it (drop, then re-add) so the store
+        and the index never disagree — the index is append-only, so an in-place
+        overwrite isn't available.
+        """
+        if id in self:
+            self.delete(id)
         self.store.upsert(self.name, id, vector, metadata)
-        self.index.add(id, vector)        # raises if id already indexed
+        self.index.add(id, vector)
         self._metadata[id] = metadata or {}
 
     def delete(self, id: int) -> bool:

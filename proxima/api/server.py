@@ -90,8 +90,8 @@ class ProjectionResponse(BaseModel):
 
 # ---- app factory ----------------------------------------------------------
 
-def create_app(db_path: str = "proxima.db", **db_kwargs) -> FastAPI:
-    app = FastAPI(title="Proxima", version="0.4.0",
+def create_app(db_path: str = "proxima.db", graph_dir: str | None = None, **db_kwargs) -> FastAPI:
+    app = FastAPI(title="Proxima", version="0.6.0",
                   description="A hand-rolled vector database.")
 
     # The UI (Phase 5) runs on a different localhost port, so allow CORS.
@@ -102,7 +102,7 @@ def create_app(db_path: str = "proxima.db", **db_kwargs) -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.state.db = Database(db_path, **db_kwargs)
+    app.state.db = Database(db_path, graph_dir=graph_dir, **db_kwargs)
 
     def get_db() -> Database:
         return app.state.db
@@ -150,10 +150,8 @@ def create_app(db_path: str = "proxima.db", **db_kwargs) -> FastAPI:
         upserted = 0
         for p in req.points:
             try:
-                # If the id already lives in the in-memory index, treat it as a
-                # replace: drop it from the store (rebuilds index), then re-add.
-                if p.id in col.index._id_to_idx:
-                    col.delete(p.id)
+                # col.add is a safe upsert: it replaces an existing id rather
+                # than leaving the store and index inconsistent.
                 col.add(p.id, np.asarray(p.vector, dtype=np.float32), p.metadata)
             except ValueError as e:
                 raise HTTPException(400, str(e))

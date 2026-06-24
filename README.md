@@ -89,7 +89,7 @@ python -m venv venv
 venv\Scripts\activate                 # Windows  (source venv/bin/activate elsewhere)
 pip install -r requirements.txt
 
-pytest                                # 77 tests across all layers
+pytest                                # 95 tests across all layers
 python -m scripts.seed --seed         # load the demo dataset into proxima.db
 python -m uvicorn proxima.api.server:app --port 8000    # http://127.0.0.1:8000/docs
 ```
@@ -138,6 +138,12 @@ python -m bench.bench --base base.npy --query query.npy # bring your own (SIFT/G
   derived and SQLite is authoritative, delete removes the row and rebuilds.
   O(n), but always consistent — fine at this scale.
 
+- **Optional graph cache, validated by fingerprint.** With a `graph_dir` set,
+  the serialized HNSW graph is loaded on startup instead of being rebuilt — but
+  only if its content fingerprint (a hash of the `(id, vector)` pairs, excluding
+  metadata) still matches the store. A stale cache is self-invalidating: on
+  mismatch we just rebuild from SQLite. The graph is never authoritative.
+
 - **Synthetic demo embeddings.** The demo dataset uses genre-centered
   pseudo-embeddings (seeded), not a real text model — guaranteed-visible
   clusters with no model download. Swapping in real sentence embeddings is a
@@ -163,7 +169,7 @@ proxima/
   api/server.py      FastAPI service
 scripts/seed.py      CLI: --seed / --reset
 bench/               recall@10 vs QPS harness (+ hand-rolled SVG curve)
-tests/               pytest, one file per module (77 tests)
+tests/               pytest, one file per module (95 tests)
 ui/                  React + Vite + TS + Tailwind demo
 ```
 

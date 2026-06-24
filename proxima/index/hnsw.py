@@ -55,7 +55,9 @@ class HNSW:
         # number of layers ~log_M(n), which is what gives the log-ish search.
         self.mL = 1.0 / math.log(M) if M > 1 else 1.0
         # Seedable RNG so tests are deterministic. Layer heights are the only
-        # randomness in the whole structure.
+        # randomness in the whole structure. We keep `seed` so a rebuild can
+        # reproduce the same graph.
+        self.seed = seed
         self._rng = random.Random(seed)
 
         # ---- storage (internal index = position in these parallel lists) ----
@@ -70,6 +72,9 @@ class HNSW:
 
     def __len__(self) -> int:
         return len(self._ids)
+
+    def __contains__(self, external_id) -> bool:
+        return external_id in self._id_to_idx
 
     # ---- distance helpers -------------------------------------------------
 
@@ -259,6 +264,7 @@ class HNSW:
             "M": self.M,
             "ef_construction": self.ef_construction,
             "ef_search": self.ef_search,
+            "seed": self.seed,
             "vectors": self._vectors,
             "ids": self._ids,
             "id_to_idx": self._id_to_idx,
@@ -280,6 +286,7 @@ class HNSW:
             M=state["M"],
             ef_construction=state["ef_construction"],
             ef_search=state["ef_search"],
+            seed=state.get("seed"),
         )
         idx._vectors = state["vectors"]
         idx._ids = state["ids"]
