@@ -1,0 +1,3 @@
+# Phase 0 starts minimal. Later phases append: fastapi, uvicorn, pydantic,
+# scikit-learn, pytest, etc. We pin as we add so each phase is reproducible.
+numpy>=1.26,<3.0

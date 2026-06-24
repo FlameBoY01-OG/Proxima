@@ -1,0 +1,50 @@
+# ---- Python ----
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Databases (SQLite is our persistence layer; never commit data) ----
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ---- Serialized HNSW graphs / index artifacts ----
+*.hnsw
+*.index
+data/
+
+# ---- Secrets / env ----
+.env
+.env.*
+
+# ---- Node / React UI (Phase 5) ----
+node_modules/
+ui/dist/
+ui/.vite/
+*.local
+
+# ---- Benchmark datasets (large, downloaded on demand) ----
+bench/data/
+*.fvecs
+*.ivecs
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
