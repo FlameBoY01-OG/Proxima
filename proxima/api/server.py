@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from .. import demo
 from ..db import Database
 from ..distance import METRICS
+from ..projection import project_pca
 
 
 # ---- request / response models (Pydantic validates the JSON for us) -------
@@ -61,6 +62,30 @@ class SearchHit(BaseModel):
 class SearchResponse(BaseModel):
     results: list[SearchHit]
     took_ms: float
+
+
+class SearchByIdRequest(BaseModel):
+    id: int
+    k: int = Field(default=10, gt=0)
+    ef_search: int | None = None
+    filter: dict | None = None
+
+
+class SearchByIdResponse(BaseModel):
+    query_id: int
+    results: list[SearchHit]
+    took_ms: float
+
+
+class ProjectedPoint(BaseModel):
+    id: int
+    x: float
+    y: float
+    metadata: dict
+
+
+class ProjectionResponse(BaseModel):
+    points: list[ProjectedPoint]
 
 
 # ---- app factory ----------------------------------------------------------
@@ -158,6 +183,41 @@ def create_app(db_path: str = "proxima.db", **db_kwargs) -> FastAPI:
             for vid, dist in hits
         ]
         return SearchResponse(results=results, took_ms=took_ms)
+
+    @app.post("/collections/{name}/search_by_id", response_model=SearchByIdResponse)
+    def search_by_id(name: str, req: SearchByIdRequest, db: Database = Depends(get_db)):
+        """Find neighbours of an existing point — 'show me titles like this one'.
+
+        The query vector never leaves the server: we look it up by id, search,
+        and return the neighbours. The UI uses this for click-to-search.
+        """
+        col = _require(db, name)
+        row = col.store.get(name, req.id)
+        if row is None:
+            raise HTTPException(404, f"point {req.id} not found in {name!r}")
+        vector, _meta = row
+        t0 = time.perf_counter()
+        hits = col.search(vector, k=req.k, ef_search=req.ef_search, filter=req.filter)
+        took_ms = (time.perf_counter() - t0) * 1000.0
+        results = [
+            SearchHit(id=vid, distance=dist, metadata=col._metadata.get(vid, {}))
+            for vid, dist in hits
+        ]
+        return SearchByIdResponse(query_id=req.id, results=results, took_ms=took_ms)
+
+    # ---- 2D projection for the map ----------------------------------------
+
+    @app.get("/collections/{name}/projection", response_model=ProjectionResponse)
+    def projection(name: str, db: Database = Depends(get_db)):
+        """PCA-project every vector to 2D so the UI can draw the vector space."""
+        _require(db, name)
+        ids, matrix, metas = db.store.load_all(name)
+        coords = project_pca(matrix)
+        points = [
+            ProjectedPoint(id=vid, x=float(xy[0]), y=float(xy[1]), metadata=meta)
+            for vid, xy, meta in zip(ids, coords, metas)
+        ]
+        return ProjectionResponse(points=points)
 
     # ---- metrics ----------------------------------------------------------
 

@@ -9,3 +9,6 @@ pytest>=8.0,<10.0
 fastapi>=0.110,<1.0
 uvicorn>=0.27,<1.0
 httpx>=0.27,<1.0          # used by FastAPI's TestClient in tests
+
+# --- Phase 5: 2D projection for the UI map ---
+scikit-learn>=1.4,<2.0   # PCA to project vectors down to 2D

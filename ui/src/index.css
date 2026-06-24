@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-fg font-sans antialiased;
+    /* A faint radial vignette gives the ink canvas some depth without clutter. */
+    background-image: radial-gradient(
+      120% 90% at 50% -10%,
+      rgba(103, 232, 249, 0.06),
+      transparent 60%
+    );
+  }
+
+  /* Thin, dark scrollbars to match the canvas. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-600 rounded-full;
+  }
+}
