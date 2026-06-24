@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .. import demo
 from ..db import Database
 from ..distance import METRICS
 
@@ -164,6 +165,18 @@ def create_app(db_path: str = "proxima.db", **db_kwargs) -> FastAPI:
     def metrics(name: str, db: Database = Depends(get_db)):
         col = _require(db, name)
         return col.metrics()
+
+    # ---- demo data (drives the UI's seed / clear buttons) -----------------
+
+    @app.post("/demo/seed")
+    def demo_seed(db: Database = Depends(get_db)):
+        count = demo.seed(db)
+        return {"collection": demo.DEMO_COLLECTION, "count": count}
+
+    @app.post("/demo/reset")
+    def demo_reset(db: Database = Depends(get_db)):
+        removed = demo.reset(db)
+        return {"collection": demo.DEMO_COLLECTION, "removed": removed}
 
     # ---- shared helper ----------------------------------------------------
 

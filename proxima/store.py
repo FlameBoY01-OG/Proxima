@@ -112,6 +112,16 @@ class Store:
         self._conn.execute("DELETE FROM collections WHERE name = ?", (name,))
         self._conn.commit()
 
+    def clear_collection(self, name: str) -> int:
+        """Delete all vectors in a collection but KEEP its definition.
+
+        Used by demo reset: the UI's "Clear all" should empty the map without
+        forgetting the collection's dim/metric. Returns the number removed.
+        """
+        cur = self._conn.execute("DELETE FROM vectors WHERE collection = ?", (name,))
+        self._conn.commit()
+        return cur.rowcount
+
     # ---- vectors ----------------------------------------------------------
 
     def upsert(

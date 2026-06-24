@@ -42,6 +42,13 @@ class Database:
         self.store.drop_collection(name)            # cascades to vectors in SQLite
         self._collections.pop(name, None)           # evict the live index
 
+    def clear_collection(self, name: str) -> int:
+        """Empty a collection's vectors (keep its definition) and reset its index."""
+        removed = self.store.clear_collection(name)
+        if name in self._collections:
+            self._collections[name].build_from_store()  # rebuild -> empty index
+        return removed
+
     # ---- convenience pass-throughs ---------------------------------------
 
     def add(self, collection: str, id: int, vector: np.ndarray, metadata: dict | None = None) -> None:
