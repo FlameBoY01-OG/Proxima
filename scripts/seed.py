@@ -24,11 +24,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--db", default="proxima.db", help="SQLite file (default: proxima.db)")
     parser.add_argument("--collection", default=demo.DEMO_COLLECTION,
                         help=f"collection name (default: {demo.DEMO_COLLECTION})")
+    parser.add_argument("--extra-per-genre", type=int, default=0,
+                        help="add N synthetic titles per genre for scale testing")
     args = parser.parse_args(argv)
 
     with Database(args.db) as db:
         if args.seed:
-            count = demo.seed(db, args.collection)
+            count = demo.seed(db, args.collection, extra_per_genre=args.extra_per_genre)
             print(f"seeded {count} vectors into '{args.collection}' ({args.db})")
         else:
             removed = demo.reset(db, args.collection)

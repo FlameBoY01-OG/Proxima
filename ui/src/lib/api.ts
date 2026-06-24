@@ -44,21 +44,45 @@ export interface Metrics {
   qps: number | null;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** "Failed to fetch" is a TypeError thrown by fetch when the request never
+ *  reached the server (connection dropped/reset, server momentarily down). It
+ *  is distinct from an HTTP error *response* (4xx/5xx), which resolves fetch. */
+function isNetworkError(e: unknown): boolean {
+  return e instanceof TypeError;
+}
+
+async function request<T>(path: string, init?: RequestInit, retries = 2): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
     try {
-      detail = (await res.json()).detail ?? detail;
-    } catch {
-      /* non-JSON error body */
+      const res = await fetch(`${BASE}${path}`, {
+        headers: { "Content-Type": "application/json" },
+        ...init,
+      });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          detail = (await res.json()).detail ?? detail;
+        } catch {
+          /* non-JSON error body */
+        }
+        // A real server response — deterministic, so don't retry it.
+        throw new Error(`${res.status}: ${detail}`);
+      }
+      return (await res.json()) as T;
+    } catch (e) {
+      // Retry only transient network blips, with a little backoff.
+      if (isNetworkError(e) && attempt < retries) {
+        await sleep(150 * (attempt + 1));
+        continue;
+      }
+      if (isNetworkError(e)) {
+        throw new Error(`Cannot reach the backend at ${BASE} — is it running on :8000?`);
+      }
+      throw e;
     }
-    throw new Error(`${res.status}: ${detail}`);
   }
-  return res.json() as Promise<T>;
 }
 
 export const api = {

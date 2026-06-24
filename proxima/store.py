@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Iterator, Optional
 
 import numpy as np
@@ -42,9 +43,15 @@ class Store:
         Pass ":memory:" for an ephemeral in-process DB (used by fast tests).
         """
         self.path = path
-        # check_same_thread=False lets the FastAPI server (Phase 4) touch the
-        # connection from worker threads; we serialize our own writes anyway.
+        # FastAPI runs our sync endpoints in a threadpool, so several requests
+        # can hit this one connection at once. A sqlite3 connection is NOT safe
+        # for concurrent cross-thread use, so we (a) allow cross-thread access
+        # and (b) serialize every operation with a re-entrant lock. The lock is
+        # re-entrant because some methods call others (upsert -> get_collection).
+        # This is cheap: DB ops are fast and the index, not the DB, is the hot
+        # path — so serializing access trades negligible latency for correctness.
         self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._lock = threading.RLock()
         # Return rows as sqlite3.Row so we can index columns by name.
         self._conn.row_factory = sqlite3.Row
         # Enforce foreign keys (off by default in SQLite) so dropping a
@@ -80,37 +87,41 @@ class Store:
 
     def create_collection(self, name: str, dim: int, metric: str = "cosine") -> None:
         """Register a collection. Idempotent if the (dim, metric) match."""
-        existing = self.get_collection(name)
-        if existing is not None:
-            if existing != (dim, metric):
-                raise ValueError(
-                    f"collection {name!r} already exists as {existing}, "
-                    f"cannot redefine as {(dim, metric)}"
-                )
-            return
-        self._conn.execute(
-            "INSERT INTO collections (name, dim, metric) VALUES (?, ?, ?)",
-            (name, dim, metric),
-        )
-        self._conn.commit()
+        with self._lock:
+            existing = self.get_collection(name)
+            if existing is not None:
+                if existing != (dim, metric):
+                    raise ValueError(
+                        f"collection {name!r} already exists as {existing}, "
+                        f"cannot redefine as {(dim, metric)}"
+                    )
+                return
+            self._conn.execute(
+                "INSERT INTO collections (name, dim, metric) VALUES (?, ?, ?)",
+                (name, dim, metric),
+            )
+            self._conn.commit()
 
     def get_collection(self, name: str) -> Optional[tuple[int, str]]:
         """Return (dim, metric) for a collection, or None if it doesn't exist."""
-        row = self._conn.execute(
-            "SELECT dim, metric FROM collections WHERE name = ?", (name,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT dim, metric FROM collections WHERE name = ?", (name,)
+            ).fetchone()
         return (row["dim"], row["metric"]) if row else None
 
     def list_collections(self) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT name FROM collections ORDER BY name"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT name FROM collections ORDER BY name"
+            ).fetchall()
         return [r["name"] for r in rows]
 
     def drop_collection(self, name: str) -> None:
         """Delete a collection and (via FK cascade) all of its vectors."""
-        self._conn.execute("DELETE FROM collections WHERE name = ?", (name,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM collections WHERE name = ?", (name,))
+            self._conn.commit()
 
     def clear_collection(self, name: str) -> int:
         """Delete all vectors in a collection but KEEP its definition.
@@ -118,9 +129,10 @@ class Store:
         Used by demo reset: the UI's "Clear all" should empty the map without
         forgetting the collection's dim/metric. Returns the number removed.
         """
-        cur = self._conn.execute("DELETE FROM vectors WHERE collection = ?", (name,))
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM vectors WHERE collection = ?", (name,))
+            self._conn.commit()
+            return cur.rowcount
 
     # ---- vectors ----------------------------------------------------------
 
@@ -135,53 +147,62 @@ class Store:
 
         Validates the vector's dimension against the collection's declared dim.
         """
-        meta = self._require_collection(collection)
-        dim = meta[0]
-        vec = np.asarray(vector, dtype=_DTYPE).reshape(-1)
-        if vec.shape[0] != dim:
-            raise ValueError(f"vector dim {vec.shape[0]} != collection dim {dim}")
+        with self._lock:
+            meta = self._require_collection(collection)
+            dim = meta[0]
+            vec = np.asarray(vector, dtype=_DTYPE).reshape(-1)
+            if vec.shape[0] != dim:
+                raise ValueError(f"vector dim {vec.shape[0]} != collection dim {dim}")
 
-        blob = vec.tobytes()  # raw float32 bytes
-        meta_json = json.dumps(metadata or {})
-        # INSERT OR REPLACE gives us upsert semantics keyed on (collection, id).
-        self._conn.execute(
-            "INSERT OR REPLACE INTO vectors (collection, id, vector, metadata) "
-            "VALUES (?, ?, ?, ?)",
-            (collection, id, blob, meta_json),
-        )
-        self._conn.commit()
+            blob = vec.tobytes()  # raw float32 bytes
+            meta_json = json.dumps(metadata or {})
+            # INSERT OR REPLACE gives us upsert semantics keyed on (collection, id).
+            self._conn.execute(
+                "INSERT OR REPLACE INTO vectors (collection, id, vector, metadata) "
+                "VALUES (?, ?, ?, ?)",
+                (collection, id, blob, meta_json),
+            )
+            self._conn.commit()
 
     def get(self, collection: str, id: int) -> Optional[tuple[np.ndarray, dict]]:
         """Return (vector, metadata) for one id, or None if absent."""
-        row = self._conn.execute(
-            "SELECT vector, metadata FROM vectors WHERE collection = ? AND id = ?",
-            (collection, id),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT vector, metadata FROM vectors WHERE collection = ? AND id = ?",
+                (collection, id),
+            ).fetchone()
         if row is None:
             return None
         return self._decode(row["vector"]), json.loads(row["metadata"])
 
     def delete(self, collection: str, id: int) -> bool:
         """Delete one vector. Returns True if a row was actually removed."""
-        cur = self._conn.execute(
-            "DELETE FROM vectors WHERE collection = ? AND id = ?", (collection, id)
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM vectors WHERE collection = ? AND id = ?", (collection, id)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def count(self, collection: str) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM vectors WHERE collection = ?", (collection,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM vectors WHERE collection = ?", (collection,)
+            ).fetchone()
         return row["n"]
 
     def iter_vectors(self, collection: str) -> Iterator[tuple[int, np.ndarray, dict]]:
-        """Stream (id, vector, metadata) rows for a collection, ordered by id."""
-        cur = self._conn.execute(
-            "SELECT id, vector, metadata FROM vectors WHERE collection = ? ORDER BY id",
-            (collection,),
-        )
-        for row in cur:
+        """Stream (id, vector, metadata) rows for a collection, ordered by id.
+
+        We fetch all rows under the lock (brief) and decode them outside it, so
+        the connection lock is never held across the caller's iteration.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, vector, metadata FROM vectors WHERE collection = ? ORDER BY id",
+                (collection,),
+            ).fetchall()
+        for row in rows:
             yield row["id"], self._decode(row["vector"]), json.loads(row["metadata"])
 
     def load_all(self, collection: str) -> tuple[list[int], np.ndarray, list[dict]]:

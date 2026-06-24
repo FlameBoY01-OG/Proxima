@@ -227,8 +227,9 @@ def create_app(db_path: str = "proxima.db", graph_dir: str | None = None, **db_k
     # ---- demo data (drives the UI's seed / clear buttons) -----------------
 
     @app.post("/demo/seed")
-    def demo_seed(db: Database = Depends(get_db)):
-        count = demo.seed(db)
+    def demo_seed(extra_per_genre: int = 0, db: Database = Depends(get_db)):
+        # POST /demo/seed?extra_per_genre=50 adds synthetic points for scale testing.
+        count = demo.seed(db, extra_per_genre=extra_per_genre)
         return {"collection": demo.DEMO_COLLECTION, "count": count}
 
     @app.post("/demo/reset")

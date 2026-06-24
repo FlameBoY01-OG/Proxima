@@ -30,6 +30,19 @@ def test_seed_then_count(db_path):
         assert db.store.count(demo.DEMO_COLLECTION) == count
 
 
+def test_extra_per_genre_scales_dataset(db_path):
+    n_genres = len({t["genre"] for t in demo.DEMO_TITLES})
+    rows = demo.build_dataset(extra_per_genre=10)
+    assert len(rows) == len(demo.DEMO_TITLES) + 10 * n_genres
+    # ids stay contiguous 1..N and synthetic points carry full metadata.
+    assert [r[0] for r in rows] == list(range(1, len(rows) + 1))
+    assert all(set(r[2]) == {"title", "genre", "year", "studio"} for r in rows)
+
+    with Database(db_path, seed=0) as db:
+        count = demo.seed(db, extra_per_genre=10)
+        assert count == len(demo.DEMO_TITLES) + 10 * n_genres
+
+
 def test_reset_empties_but_keeps_collection(db_path):
     with Database(db_path, seed=0) as db:
         demo.seed(db)
