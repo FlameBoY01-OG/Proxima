@@ -1,3 +1,6 @@
-# Phase 0 starts minimal. Later phases append: fastapi, uvicorn, pydantic,
-# scikit-learn, pytest, etc. We pin as we add so each phase is reproducible.
+# We pin as we add so each phase stays reproducible.
+# Later phases append: fastapi, uvicorn, pydantic, scikit-learn, etc.
+
+# --- Phase 1: brute-force core ---
 numpy>=1.26,<3.0
+pytest>=8.0,<10.0
